@@ -7,9 +7,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from time import time
-
-from pydantic.v1.utils import almost_equal_floats
-
 from config import API_KEY
 from ai_models.llama import llama
 from ai_models.gemini import gemini
@@ -42,6 +39,7 @@ class Text(StatesGroup):
 
 class Anything(StatesGroup):
     anything = State()
+
 
 async def sentence_checking(text, user_text):
     ref_words = text.split()
