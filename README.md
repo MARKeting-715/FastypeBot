@@ -21,18 +21,17 @@ FastypeBot — это Telegram-бот, который предоставляет
 
    ```python
    API_KEY = "ваш_telegram_api_key"
-   AI_KEY = "ваш_ai_service_key"
+   AI_KEY = "ваш_open_router_key"
    ```
 
 4. **Запустите бота:**
    ```bash
-   python main.py
+   python fastype.py
    ```
 
 ## Особенности
 
 - Поддержка интеграции с ИИ через API.
-- Легко настраивается с помощью конфигурационного файла.
 - Простой запуск и настройка.
 
 ## Вклад
