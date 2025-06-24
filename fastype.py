@@ -20,7 +20,6 @@ models = {
     "deepseek": deepseek,
     "mistral": mistral,
     "qwen": qwen
-
 }
 
 bot = Bot(API_KEY)
