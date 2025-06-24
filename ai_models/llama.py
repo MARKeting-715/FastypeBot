@@ -40,3 +40,5 @@ async def llama():
         return response.json()["choices"][0]["message"]["content"]
     except KeyError:
         return "Не удалось получит ответ, смените модель на другую доступную"
+
+# я люблю бургеры
