@@ -1,18 +1,34 @@
 import asyncio
+import logging
+import sys
 from itertools import zip_longest
-from aiogram import Bot, Dispatcher, F
+from time import time
+
+from aiogram import Bot, Dispatcher, F, exceptions
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (Message, CallbackQuery,
+                           InlineKeyboardMarkup, InlineKeyboardButton)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from time import time
+
 from config import API_KEY
 from ai_models.llama import llama
 from ai_models.gemini import gemini
 from ai_models.deepseek import deepseek
 from ai_models.mistral import mistral
 from ai_models.qwen import qwen
+
+# конфиггг
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+bot = Bot(token=API_KEY)
+dp = Dispatcher()
 
 models = {
     "gemini": gemini,
@@ -22,126 +38,156 @@ models = {
     "qwen": qwen
 }
 
-bot = Bot(API_KEY)
+class States(StatesGroup):
+    pick_model = State()
+    awaiting_text = State()
+    awaiting_input = State()
 
-dp = Dispatcher()
-
-class AI(StatesGroup):
-    ai = State()
-
-class Text(StatesGroup):
-    text = State()
-    user_text = State()
-    chat_id = State()
-    message_id = State()
-    time = State()
-
-class Anything(StatesGroup):
-    anything = State()
-
-
-async def sentence_checking(text, user_text):
-    ref_words = text.split()
-    user_words = user_text.split()
-    output_text = ""
+# Помогатор
+async def sentence_checking(reference: str, user_input: str) -> tuple[str, int]:
     errors = 0
-    for ref_word, user_word in zip_longest(ref_words, user_words, fillvalue=""):
-        for ref_letter, user_letter in zip_longest(ref_word, user_word, fillvalue=""):
-            if (ref_letter == user_letter or
-                (ref_letter in "её" and user_letter in "её")):
-                output_text += ref_letter
+    output = []
+    for ref_word, usr_word in zip_longest(reference.split(), user_input.split(), fillvalue=""):
+        word_res = []
+        for r_char, u_char in zip_longest(ref_word, usr_word, fillvalue=""):
+            if r_char == u_char or (r_char in "её" and u_char in "её"):
+                word_res.append(r_char)
             else:
-                output_text += f"<b><u>{ref_letter}</u></b>"
+                word_res.append(f"<b><u>{r_char}</u></b>")
                 errors += 1
-        output_text += " "
-    return output_text.strip(), errors
+        output.append("".join(word_res))
+    return " ".join(output), errors
 
-start_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Начать", callback_data="start_game")],
-    # [InlineKeyboardButton(text="Выбрать язык", callback_data="change_language")],
-    [InlineKeyboardButton(text="Выбрать модель", callback_data="change_model")]
-])
 
-endgame_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Продолжить", callback_data="start_game"), InlineKeyboardButton(text="Назад", callback_data="back")]
-])
+def build_start_markup() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="Начать", callback_data="start_game"))
+    builder.add(InlineKeyboardButton(text="Выбрать модель", callback_data="change_model"))
+    return builder.as_markup()
 
-back_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Назад", callback_data="back")]
-])
+def build_model_markup(current: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for key in models.keys():
+        label = f"{key} ✅" if key == current else key
+        builder.add(InlineKeyboardButton(text=label, callback_data=key))
+    builder.add(InlineKeyboardButton(text="Назад", callback_data="back"))
+    return builder.adjust(1).as_markup()
+
+def build_endgame_markup() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Продолжить", callback_data="start_game"),
+        InlineKeyboardButton(text="Назад", callback_data="back")
+    )
+    return builder.as_markup()
+
+# Error handler
+@dp.errors()
+async def global_error_handler(update, exception: Exception):
+    logger.error(f"Exception in update {update}: {exception}")
+    if isinstance(exception, exceptions.BotBlocked):
+        logger.warning("Bot is blocked by user.")
+        return True
+    return False
 
 @dp.message(CommandStart())
-async def start(message: Message):
-    await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
-    setup_markup = InlineKeyboardBuilder()
-    for ai in ["gemini", "llama", "deepseek", "qwen"]:
-        setup_markup.add(InlineKeyboardButton(text=ai, callback_data=ai))
-    await message.answer("Привет, это fastype бот, он поможет вам в тренировке слепой печати.", reply_markup=start_markup)
-
-@dp.callback_query(F.data.in_(["change_model", "gemini", "llama", "deepseek", "mistral", "qwen"]))
-async def change_model(callback: CallbackQuery, state: FSMContext):
-    if callback.data in ["gemini", "llama", "deepseek", "mistral", "qwen"]:
-        await state.update_data(ai=callback.data)
-    current_ai = (await state.get_data()).get("ai", "gemini")
-    models_markup = InlineKeyboardBuilder()
-    for ai in ["gemini", "llama", "deepseek", "mistral", "qwen"]:
-        ai_name = f"{ai} ✅" if ai == current_ai else ai
-        models_markup.add(InlineKeyboardButton(text=ai_name, callback_data=ai))
-    models_markup.add(InlineKeyboardButton(text="Назад", callback_data="back"))
-    await bot.edit_message_text(
-        text="Выберите модель",
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        reply_markup=models_markup.adjust(1).as_markup()
+async def cmd_start(message: Message, state: FSMContext):
+    logger.debug(f"/start from {message.from_user.id}")
+    try:
+        await state.clear()
+        await message.delete()
+    except exceptions.TelegramAPIError as e:
+        logger.warning(f"Failed to delete start message: {e}")
+    await message.answer(
+        "Привет, это fastype бот, он поможет вам в тренировке слепой печати.",
+        reply_markup=build_start_markup()
     )
+    await state.set_state(States.pick_model)
+
+@dp.callback_query(F.data.in_(models.keys() | {"change_model"}))
+async def on_change_model(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data() or {}
+    current = data.get("model", "gemini")
+    if callback.data in models:
+        await state.update_data(model=callback.data)
+        current = callback.data
+n    await callback.message.edit_text(
+        "Выберите модель",
+        reply_markup=build_model_markup(current)
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data == "start_game")
-async def start_game(callback: CallbackQuery, state: FSMContext):
-    await callback.answer("Это может занять некоторое время")
-    func = models.get((await state.get_data()).get("ai", "gemini"), gemini)
-    await state.update_data(text=await func())
-    answer = (await state.get_data()).get("text")
-    await state.update_data(chat_id = callback.message.chat.id, message_id = callback.message.message_id)
-    await bot.edit_message_text(
-        text=answer,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        reply_markup=back_markup
-    )
-    await state.set_state(Text.user_text)
-    await state.update_data(time = time())
+async def on_start_game(callback: CallbackQuery, state: FSMContext):
+    logger.debug(f"Starting game for {callback.from_user.id}")
+    await callback.answer("Генерация текста...", show_alert=False)
+    data = await state.get_data() or {}
+    model_key = data.get("model", "gemini")
+    gen_func = models.get(model_key, gemini)
+    try:
+        text = await gen_func()
+    except Exception as e:
+        logger.error(f"AI model generation failed: {e}")
+        text = "Не удалось получить ответ, смените модель"
+    await state.update_data(text=text, start_time=time())
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=build_endgame_markup()
+        )
+        await state.set_state(States.awaiting_input)
+    except exceptions.TelegramAPIError as e:
+        logger.error(f"Failed to edit message: {e}")
+    await callback.answer()
 
-@dp.message(Text.user_text)
-async def checking(message: Message, state: FSMContext):
-    await state.update_data(user_text = message.text)
-    await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+@dp.message(States.awaiting_input)
+async def on_user_input(message: Message, state: FSMContext):
     data = await state.get_data()
-    time_result = time() - data["time"]
-    text_result, errors = await sentence_checking(data["text"], data["user_text"])
-    await bot.edit_message_text(
-        text=f"{text_result}\n\n{data["user_text"]}\n\nВы справились за {round(time_result, 2)} секунд\nВаша скорость печати была {round(len(text_result.split())/(time_result/60), 1)} слов в минуту\nВаша аккуратность {100 - round((errors / len("".join(ch for ch in text_result if ch != " "))) * 100, 1)}%{"\n\n*При вводе этого нелепого текста вы наполняетесь решимостью*\n(пасхалка найдена!)" if data["text"] == "Не удалось получит ответ, смените модель на другую доступную" else ""}",
-        chat_id=data["chat_id"],                                                                                                   #Делим кол-во слов на время в минутах                                               #Кол-во ошибок делим на кол-во символов без пробелов(берем через сокр. цикл for все, кроме пробела, и соединяем с помощью join)     попробуйте найти пасхалку)
-        message_id=data["message_id"],
-        reply_markup=endgame_markup,
-        parse_mode="HTML"
+    text = data.get("text", "")
+    elapsed = time() - data.get("start_time", time())
+    user_text = message.text
+    await message.delete()
+    checked, errors = await sentence_checking(text, user_text)
+    words = len(text.split())
+    speed = round(words / (elapsed / 60), 1)
+    total_chars = len(text.replace(" ", ""))
+    accuracy = round((1 - errors / total_chars) * 100, 1) if total_chars else 0
+    result_msg = (
+        f"{checked}\n\n{user_text}\n\n"
+        f"Вы справились за {round(elapsed, 2)} секунд\n"
+        f"Скорость: {speed} слов/мин\n"
+        f"Аккуратность: {accuracy}%"
     )
+    if text == "Не удалось получить ответ, смените модель":
+        result_msg += "\n\n*пасхалка найдена!*"
+    try:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=result_msg,
+            reply_markup=build_endgame_markup(),
+            parse_mode="HTML"
+        )
+    except exceptions.TelegramAPIError as e:
+        logger.error(f"Failed to send result: {e}")
+    await state.set_state(States.pick_model)
 
 @dp.callback_query(F.data == "back")
-async def back(callback: CallbackQuery, state: FSMContext):
-    await bot.edit_message_text(
-        text="Привет, это fastype бот, он поможет вам в тренировке слепой печати.",
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        reply_markup=start_markup
-    )
-    await state.set_state(Anything.anything)
-
-@dp.message(Anything.anything)
-@dp.message()
-async def anything(message: Message):
-    await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+async def on_back(callback: CallbackQuery, state: FSMContext):
+    logger.debug(f"Back to menu for {callback.from_user.id}")
+    try:
+        await callback.message.edit_text(
+            "Привет, это fastype бот, он поможет вам в тренировке слепой печати.",
+            reply_markup=build_start_markup()
+        )
+    except exceptions.TelegramAPIError as e:
+        logger.warning(f"Edit back failed: {e}")
+    await state.set_state(States.pick_model)
+    await callback.answer()
 
 async def main():
+    logger.info("Bot starting polling...")
     await dp.start_polling(bot)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
+
